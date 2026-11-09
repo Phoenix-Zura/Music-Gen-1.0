@@ -54,6 +54,29 @@ class GenerateMusicTests(unittest.TestCase):
         self.assertEqual(first.wav_data, second.wav_data)
         self.assertEqual(first.midi_data, second.midi_data)
 
+    def test_new_seed_changes_a_piano_only_arrangement(self):
+        settings = {**self.settings, "instruments": ["Piano"], "reverb": 0}
+        first = generate_music(**{**settings, "seed": 41})
+        repeat = generate_music(**{**settings, "seed": 41})
+        different = generate_music(**{**settings, "seed": 42})
+
+        self.assertEqual(first.midi_data, repeat.midi_data)
+        self.assertEqual(first.wav_data, repeat.wav_data)
+        self.assertNotEqual(first.midi_data, different.midi_data)
+        self.assertNotEqual(first.wav_data, different.wav_data)
+
+    def test_variation_strength_changes_arrangement(self):
+        settings = {**self.settings, "instruments": ["Piano"], "reverb": 0, "seed": 42}
+        balanced = generate_music(**settings, variation_strength=2)
+        bold = generate_music(**settings, variation_strength=5)
+
+        self.assertNotEqual(balanced.midi_data, bold.midi_data)
+        self.assertNotEqual(balanced.wav_data, bold.wav_data)
+
+    def test_variation_strength_is_validated(self):
+        with self.assertRaisesRegex(ValueError, "Variation strength"):
+            generate_music(**self.settings, variation_strength=0)
+
     def test_prompt_is_required(self):
         with self.assertRaisesRegex(ValueError, "description"):
             generate_music(**{**self.settings, "prompt": "  "})

@@ -45,6 +45,19 @@ st.markdown(
 
 if "generation" not in st.session_state:
     st.session_state.generation = None
+if "pending_version_seed" not in st.session_state:
+    st.session_state.pending_version_seed = None
+if "variation_seed" not in st.session_state:
+    st.session_state.variation_seed = 42
+
+
+def _request_another_version() -> None:
+    generation = st.session_state.get("generation")
+    if generation is None:
+        return
+    next_seed = (generation["seed"] + 1) % 1_000_000
+    st.session_state["variation_seed"] = next_seed
+    st.session_state["pending_version_seed"] = next_seed
 
 st.markdown(
     """
@@ -96,7 +109,21 @@ with st.sidebar:
             placeholder="fluidsynth (if available on PATH)",
             help="Leave blank to find FluidSynth on PATH, or provide its full executable path.",
         )
-    seed = st.number_input("Variation seed", min_value=0, max_value=999999, value=42, step=1)
+    seed = st.number_input(
+        "Variation seed",
+        min_value=0,
+        max_value=999999,
+        step=1,
+        key="variation_seed",
+        help="The same seed and settings reproduce the same track. Change it or make a new version to vary the arrangement.",
+    )
+    variation_strength = st.slider(
+        "Variation strength",
+        min_value=1,
+        max_value=5,
+        value=4,
+        help="Higher settings change chord voicings, rhythm patterns, melody contours, bass, and drums more substantially.",
+    )
 
 left, right = st.columns([1.45, 0.85], gap="large")
 with left:
@@ -128,6 +155,10 @@ with right:
     st.write("**Playing:** " + (", ".join(instruments) if instruments else "Choose at least one instrument"))
     st.caption("Every result includes an audio preview, WAV download, and editable MIDI.")
 
+request_config = None
+recognized_cues: tuple[str, ...] = ()
+pending_version_seed = st.session_state.pending_version_seed
+
 if submitted:
     try:
         interpretation = interpret_prompt(prompt)
@@ -141,29 +172,11 @@ if submitted:
         effective_progression = interpretation.progression_name or progression_name
         effective_reverb = interpretation.reverb if interpretation.reverb is not None else reverb
         effective_instruments = resolve_instruments(instruments, interpretation)
-
-        with st.spinner("Composing and rendering your track..."):
-            result = generate_music(
-                prompt=prompt,
-                genre=effective_genre,
-                mood=effective_mood,
-                key=effective_key,
-                bpm=effective_bpm,
-                bars=effective_bars,
-                instruments=effective_instruments,
-                seed=int(seed),
-                progression_name=effective_progression,
-                reverb=effective_reverb,
-                audio_engine=audio_engine,
-                soundfont_path=soundfont_path or None,
-                fluidsynth_path=fluidsynth_path or None,
-            )
-        st.session_state.generation = {
-            "result": result,
+        request_config = {
             "prompt": prompt.strip(),
             "genre": effective_genre,
             "mood": effective_mood,
-            "key": result.resolved_key,
+            "key": effective_key,
             "bpm": effective_bpm,
             "bars": effective_bars,
             "instruments": effective_instruments,
@@ -171,12 +184,45 @@ if submitted:
             "progression_name": effective_progression,
             "reverb": effective_reverb,
             "audio_engine": audio_engine,
-            "recognized_cues": interpretation.recognized_cues,
+            "soundfont_path": soundfont_path or None,
+            "fluidsynth_path": fluidsynth_path or None,
+            "variation_strength": variation_strength,
+        }
+        recognized_cues = interpretation.recognized_cues
+    except ValueError as error:
+        st.error(str(error))
+elif pending_version_seed is not None and st.session_state.generation is not None:
+    request_config = st.session_state.generation["request_config"].copy()
+    request_config["seed"] = pending_version_seed
+    recognized_cues = st.session_state.generation["recognized_cues"]
+
+if request_config is not None:
+    try:
+        with st.spinner("Composing a new arrangement..."):
+            result = generate_music(**request_config)
+        st.session_state.generation = {
+            "result": result,
+            "prompt": request_config["prompt"],
+            "genre": request_config["genre"],
+            "mood": request_config["mood"],
+            "key": result.resolved_key,
+            "bpm": request_config["bpm"],
+            "bars": request_config["bars"],
+            "instruments": request_config["instruments"],
+            "seed": request_config["seed"],
+            "progression_name": request_config["progression_name"],
+            "reverb": request_config["reverb"],
+            "audio_engine": request_config["audio_engine"],
+            "variation_strength": request_config["variation_strength"],
+            "recognized_cues": recognized_cues,
+            "request_config": request_config,
         }
     except ValueError as error:
         st.error(str(error))
     except SoundFontRenderError as error:
         st.error(str(error))
+    finally:
+        st.session_state.pending_version_seed = None
 
 generation = st.session_state.generation
 if generation:
@@ -191,6 +237,15 @@ if generation:
     st.caption(
         f"Progression: {generation['progression_name']} · Reverb: {generation['reverb']}% · "
         f"Renderer: {generation['audio_engine']}"
+    )
+    st.caption(
+        f"Variation seed: {generation['seed']} · Strength: {generation['variation_strength']}/5"
+    )
+    st.button(
+        "🎲 Make a different version",
+        on_click=_request_another_version,
+        help="Keep the current settings and generate a new arrangement with the next seed.",
+        use_container_width=True,
     )
     metric_columns = st.columns(3)
     metric_columns[0].metric("Duration", f"{result.duration_seconds:.1f} sec")

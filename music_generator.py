@@ -346,17 +346,62 @@ def _make_events(
     instruments: list[str],
     seed: int,
     progression_name: str,
+    variation_strength: int,
 ) -> list[NoteEvent]:
     root, mode = KEYS[key]
     scale = SCALES[mode]
-    seed_material = f"{seed}|{prompt}|{genre}|{mood}|{key}|{bpm}|{bars}|{','.join(instruments)}"
+    seed_material = (
+        f"{seed}|{prompt}|{genre}|{mood}|{key}|{bpm}|{bars}|"
+        f"{','.join(instruments)}|{progression_name}|{variation_strength}"
+    )
     stable_seed = int.from_bytes(hashlib.sha256(seed_material.encode("utf-8")).digest()[:8], "big")
     rng = random.Random(stable_seed)
     velocity_scale = MOOD_VELOCITY[mood]
     progression = CHORD_PROGRESSIONS[progression_name] or PROGRESSIONS[genre]
+    chord_patterns = ["block", "inversion"]
+    if variation_strength >= 2:
+        chord_patterns.append("broken")
+    if variation_strength >= 3:
+        chord_patterns.append("arpeggiated")
+    if variation_strength >= 4:
+        chord_patterns.append("syncopated")
+    if variation_strength >= 5:
+        chord_patterns.append("sparse")
+
+    bass_patterns = ["pulse"]
+    if variation_strength >= 2:
+        bass_patterns.append("alternating")
+    if variation_strength >= 3:
+        bass_patterns.append("syncopated")
+    if variation_strength >= 4:
+        bass_patterns.append("driving")
+    if variation_strength >= 5:
+        bass_patterns.append("sparse")
+
+    melody_patterns = ["chord_tones", "stepwise"]
+    if variation_strength >= 2:
+        melody_patterns.append("mixed")
+    if variation_strength >= 3:
+        melody_patterns.append("wide_leaps")
+    if variation_strength >= 4:
+        melody_patterns.append("arpeggio")
+    if variation_strength >= 5:
+        melody_patterns.append("sparse")
+
+    drum_patterns = ["straight"]
+    if variation_strength >= 2:
+        drum_patterns.append("half_time")
+    if variation_strength >= 3:
+        drum_patterns.append("syncopated")
+    if variation_strength >= 4:
+        drum_patterns.append("driving")
+    if variation_strength >= 5:
+        drum_patterns.append("sparse")
+
     events: list[NoteEvent] = []
 
     def add(instrument: str, pitch: int, start: float, length: float, velocity: float) -> None:
+        velocity += rng.randint(-2 * variation_strength, 2 * variation_strength)
         events.append(
             NoteEvent(
                 instrument=instrument,
@@ -375,46 +420,119 @@ def _make_events(
             chord_root = _scale_pitch(root, scale, chord_degree, 3)
             chord_third = _scale_pitch(root, scale, chord_degree + 2, 3)
             chord_fifth = _scale_pitch(root, scale, chord_degree + 4, 3)
+            chord_pitches = [chord_root, chord_third, chord_fifth]
 
             if role == "drums":
-                for beat in (0, 2):
+                drum_pattern = rng.choice(drum_patterns)
+                kick_positions = {
+                    "straight": (0, 2),
+                    "half_time": (0,),
+                    "syncopated": (0, 1.5, 2.5),
+                    "driving": (0, 1, 2, 3),
+                    "sparse": (0,),
+                }[drum_pattern]
+                snare_positions = {
+                    "straight": (1, 3),
+                    "half_time": (2,),
+                    "syncopated": (1.5, 3),
+                    "driving": (1, 3),
+                    "sparse": (3,),
+                }[drum_pattern]
+                for beat in kick_positions:
                     add(instrument, DRUM_NOTES["Kick"], bar_start + beat, 0.24, 94)
-                for beat in (1, 3):
+                for beat in snare_positions:
                     add(instrument, DRUM_NOTES["Snare"], bar_start + beat, 0.22, 76)
                 for eighth in range(8):
-                    if genre != "Ambient" or eighth in (2, 6):
+                    base_hat_probability = 0.28 if drum_pattern == "sparse" else 0.65
+                    if genre == "Ambient":
+                        base_hat_probability *= 0.5
+                    if rng.random() < base_hat_probability:
                         add(instrument, DRUM_NOTES["Closed hi-hat"], bar_start + eighth * 0.5, 0.12, 45)
 
             elif role in ("chords", "pad"):
-                chord_length = 3.8 if role == "chords" else 4.0
+                chord_pattern = rng.choice(chord_patterns) if role == "chords" else "pad"
+                inversion = rng.randrange(3) if variation_strength >= 2 else 0
+                voiced_chord = chord_pitches[inversion:] + chord_pitches[:inversion]
+                voiced_chord = [
+                    pitch + (12 if index < inversion else 0)
+                    for index, pitch in enumerate(voiced_chord)
+                ]
+                octave_shift = rng.choice((-12, 0, 12)) if variation_strength >= 4 else 0
+                voiced_chord = [pitch + octave_shift for pitch in voiced_chord]
+                chord_length = (3.4 + rng.random() * 0.6) if role == "chords" else 4.0
                 chord_velocity = 78 if role == "chords" else 58
-                for pitch in (chord_root, chord_third, chord_fifth):
-                    add(instrument, pitch, bar_start, chord_length, chord_velocity)
-                if role == "chords" and genre in ("Pop", "Lo-fi"):
-                    for beat in (2, 3):
-                        add(instrument, chord_root + 12, bar_start + beat, 0.42, 43)
+                if role == "pad":
+                    for pitch in voiced_chord:
+                        add(instrument, pitch, bar_start, chord_length, chord_velocity)
+                elif chord_pattern == "arpeggiated":
+                    direction = voiced_chord if rng.random() < 0.5 else list(reversed(voiced_chord))
+                    for index, beat in enumerate((0, 0.75, 1.5, 2.5)):
+                        add(instrument, direction[index % len(direction)], bar_start + beat, 0.62, chord_velocity)
+                elif chord_pattern == "broken":
+                    for index, beat in enumerate((0, 1.5, 2.5)):
+                        add(instrument, voiced_chord[index], bar_start + beat, 0.72, chord_velocity)
+                elif chord_pattern == "syncopated":
+                    for index, beat in enumerate((0, 1.75, 2.5, 3.5)):
+                        add(instrument, voiced_chord[index % len(voiced_chord)], bar_start + beat, 0.38, chord_velocity)
+                elif chord_pattern == "sparse":
+                    for pitch in (voiced_chord[0], voiced_chord[2]):
+                        add(instrument, pitch, bar_start, chord_length, chord_velocity)
+                else:
+                    for pitch in voiced_chord:
+                        add(instrument, pitch, bar_start, chord_length, chord_velocity)
+                    if genre in ("Pop", "Lo-fi") and rng.random() < 0.7:
+                        for beat in (2, 3):
+                            add(instrument, voiced_chord[0] + 12, bar_start + beat, 0.42, 43)
 
             elif role == "bass":
-                for beat in (0, 2):
-                    add(instrument, chord_root - 24, bar_start + beat, 0.82, 88)
-                if genre in ("Jazz", "Lo-fi") and rng.random() < 0.65:
-                    add(instrument, chord_root - 12, bar_start + 3, 0.55, 63)
+                bass_pattern = rng.choice(bass_patterns)
+                bass_notes = {
+                    "pulse": ((0, chord_root - 24), (2, chord_root - 24)),
+                    "alternating": ((0, chord_root - 24), (2, chord_fifth - 24)),
+                    "syncopated": ((0, chord_root - 24), (1.5, chord_fifth - 24), (3, chord_root - 12)),
+                    "driving": tuple((beat, chord_root - 24) for beat in (0, 1, 2, 3)),
+                    "sparse": ((0, chord_root - 24),),
+                }[bass_pattern]
+                for beat, pitch in bass_notes:
+                    add(instrument, pitch, bar_start + beat, 0.72, 82 if beat else 90)
 
             elif role in ("melody", "bell"):
-                if role == "bell":
+                melody_pattern = rng.choice(melody_patterns) if role == "melody" else "bell"
+                if role == "bell" or melody_pattern == "arpeggio":
                     note_positions = (0.5, 1.5, 2.5, 3.5)
+                elif melody_pattern == "sparse":
+                    note_positions = (0, 3) if rng.random() < 0.5 else (1, 3)
+                elif melody_pattern == "stepwise":
+                    note_positions = (0, 1, 2, 3)
                 elif genre == "Ambient":
-                    note_positions = (0, 2)
+                    note_positions = (0, 2) if rng.random() < 0.5 else (0, 1.5, 3)
+                elif melody_pattern == "wide_leaps":
+                    note_positions = (0, 0.75, 2, 2.75, 3.5)
                 else:
                     note_positions = (0, 0.5, 1.5, 2, 3, 3.5)
-
+                previous_degree = chord_degree
                 for position in note_positions:
                     if role == "melody" and position % 1 == 0.5 and rng.random() < 0.34:
                         continue
                     chord_tones = (chord_degree, chord_degree + 2, chord_degree + 4)
-                    degree = rng.choice(chord_tones if rng.random() < 0.72 else tuple(range(7)))
-                    pitch = _scale_pitch(root, scale, degree, 5 if role == "bell" else 4)
+                    if melody_pattern == "stepwise":
+                        degree = (previous_degree + rng.choice((-1, 1))) % len(scale)
+                    elif melody_pattern == "wide_leaps":
+                        degree = rng.choice((chord_degree, chord_degree + 2, chord_degree + 4, chord_degree + 6))
+                    elif melody_pattern == "arpeggio":
+                        degree = chord_tones[int(position) % len(chord_tones)]
+                    elif melody_pattern == "sparse":
+                        degree = rng.choice(chord_tones)
+                    else:
+                        degree = rng.choice(chord_tones if rng.random() < 0.72 else tuple(range(7)))
+                    previous_degree = degree
+                    octave = (5 if role == "bell" else 4) + (
+                        rng.choice((-1, 0, 1)) if role == "melody" and variation_strength >= 4 else 0
+                    )
+                    pitch = _scale_pitch(root, scale, degree, octave)
                     length = 0.38 if position % 1 == 0.5 else (0.82 if role == "melody" else 0.65)
+                    if role == "melody" and variation_strength >= 3 and rng.random() < 0.2:
+                        length *= 0.65
                     add(instrument, pitch, bar_start + position, length, 72 if role == "melody" else 62)
 
     return events
@@ -680,6 +798,7 @@ def generate_music(
     audio_engine: str = "Built-in synth",
     soundfont_path: str | None = None,
     fluidsynth_path: str | None = None,
+    variation_strength: int = 4,
 ) -> GenerationResult:
     """Create a deterministic procedural composition as a MIDI file and synthesized WAV."""
     if not prompt.strip():
@@ -703,6 +822,8 @@ def generate_music(
         raise ValueError("Sample rate must be between 8,000 and 48,000 Hz.")
     if not 0 <= reverb <= 60:
         raise ValueError("Reverb must be between 0 and 60 percent.")
+    if not 1 <= variation_strength <= 5:
+        raise ValueError("Variation strength must be between 1 and 5.")
     if audio_engine not in ("Built-in synth", "FluidSynth + SoundFont"):
         raise ValueError(f"Unsupported audio engine: {audio_engine}")
     if audio_engine == "FluidSynth + SoundFont" and not soundfont_path:
@@ -710,7 +831,18 @@ def generate_music(
             "Provide a SoundFont file path (.sf2 or .sf3) to use FluidSynth rendering."
         )
 
-    events = _make_events(prompt, genre, mood, resolved_key, bpm, bars, instruments, seed, progression_name)
+    events = _make_events(
+        prompt,
+        genre,
+        mood,
+        resolved_key,
+        bpm,
+        bars,
+        instruments,
+        seed,
+        progression_name,
+        variation_strength,
+    )
     midi_data = _make_midi(events, bpm, prompt)
     duration_seconds = bars * 4 * 60 / bpm
     if audio_engine == "FluidSynth + SoundFont":
